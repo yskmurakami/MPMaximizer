@@ -1,9 +1,6 @@
 import numpy as np
 from random import uniform
 
-mat = np.array([[4.0, 0.0], 
-                [2.0, 3.0]])
-
 class SolveEquivalence2x2:
     
     def __init__(self, matrix, dim=2):
@@ -130,11 +127,3 @@ class FindPotentialFunction:
         if i == 100:
             print "Error : there seems to be no potential maximizer."
         
-    def get_brv1(self):
-        print self.brv1
-    
-    def get_brv2(self):
-        print self.brv2
-    
-    def get_bru2(self):
-        print self.bru2    
