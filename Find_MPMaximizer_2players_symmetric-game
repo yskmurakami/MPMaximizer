@@ -1,0 +1,323 @@
+"""
+今のところの仕様としては、
+・playerは２人に限る
+・利得が対称なゲームに限る（supermodularの必要はない）
+・戦略は何個でも対応しているが、手元のMBPで３個の戦略のゲームを計算するのに２秒ぐらいかかる
+"""
+
+import numpy as np
+from math import pi
+from random import uniform
+
+def cal_equilibrium(mat, dim):
+    """
+    与えられた利得行列に対し、BRが全ての戦略になるような相手の混合戦略（負の値を認める）を求める.
+    条件は、利得行列が逆行列を持つこと.
+    式で書くと、
+    M = 与えられた行列（dim*dim次元の行列）
+    x = 求める混合戦略（dim次元ベクトル）
+    1 = 全ての成分が1のdim次元ベクトル
+    c = 実数定数
+    としたときに、
+     Mx = c1 and x'1 = 1
+    を満たすcとxを求め、xを返す.
+    """
+    ones = np.ones(dim)
+    inversemat = np.linalg.inv(mat)
+    x = np.dot(inversemat, ones)
+    c = np.dot(x.T, ones)
+    return x / c
+
+def test_area(vec, dim, epsilon=1E-7):
+    """
+    与えられた混合戦略が確率分布ならばTrue、そうでなければFalseを返す.
+    すなわち、全ての戦略の割合が非負ならばTrue.
+    """
+    boolvec = vec > -epsilon
+    return dim - np.count_nonzero(boolvec) == 0
+
+def gen_point(dim, grid=100, epsilon=1E-7):
+    """
+    grid生成の関数.(dim-2)次元の[0,1]空間にgridの個数だけ点を打つ.
+    (例)dim = 4でgrid = 4（すなわちscale = 0.25）とすると、
+        (0, 0), (0, 0.25), (0, 0.5), (0, 0.75), (0, 1),
+        (0.25, 0.25), (0.25, 0.5), (0.25, 0.75), (0.25, 1),
+        (0.5, 0.5), (0.5, 0.75), (0.5, 1),
+        (0.75, 0.75), (0.75, 1), (1, 1)
+        の全てがリストで返る.
+    生成には再帰を使えばもっと行数を減らせると後で気付いたが、再帰を使わない方が速いかなと思い、そのままに.
+    ただし、dim=2の場合は別処理にしており、gen_boundaryとまとめて処理になっているので不格好.
+    gen_boundaryとgen_aroundequと３つをまとめてgen_testpointsのクラスを作る方が賢明そう.
+    """
+    point_dim = dim - 2
+    if point_dim == 0: #dimが2のときの処理はboundary生成まで別途行う
+        boundary = np.array(([0, 1], [1, 0]))
+        return boundary
+    else:
+        scale = 1.0 / grid #１目盛りの長さを計算
+        point = [] #0と1の間に目盛り間隔で点を打つパターンを全て列挙
+        distance = []
+        for i in range(point_dim):
+            point.append(0)
+        now_number = point_dim - 1
+        while point[0] < 1+epsilon:
+            while point[now_number] < 1+epsilon:
+                for i in range(point_dim-1-now_number):
+                    point[now_number+i+1] = point[now_number]
+                distance += point
+                now_number = point_dim - 1
+                point[now_number] += scale
+            now_number -= 1
+            point[now_number] += scale
+        return distance
+
+def gen_boundary(dim, point, epsilon=1E-7):#高次元まで対応している
+    """
+    大きな目的は、dim次元空間の[0,1]で囲まれた部分の境界点を全て列挙すること.
+    式で書くと、
+    \sum_{i=0}^{dim-1} b_i = 1
+    and
+    少なくとも１つのb_i = 0
+    を満たすb_i(i=0,...,dim-1)を全て列挙することを目指している.
+    したがって、gen_pointで(dim-2)次元のgridを生成したので、それをp_1,...,p_(dim-3)とすると、
+    以下の２つの手順でdim次元空間にすることができる.
+    イ：先のp_iを数直線上に取った点とみなし、点と点の間をd_iとする.（d_iはdim-1個になる）
+    すなわち、
+    d_0 = p_0 - 0
+    d_1 = p_1 - p_0
+    ...
+    d_(dim-3) = p_(dim-3)-p_(dim-4)
+    d_(dim-2) = 1 - p_(dim-3)
+    これを全てのpの組に対して行う.
+    このdim-1個のdの和は1になっている.
+    ロ：少なくとも１つのb_iを0とするために、少々無駄が生じるが、dの組１個に対して0をどこかに１つ挿入することで、
+    b_iにすることができる.また、0を挿入できる箇所はdim個あるので、dの組１個に対してbの組はdim個生まれる.
+    このやり方だと最終的にbの組には重複が許されてしまうので、取り除く方が計算は速くなるだろう.
+    取り除く部分はまだ.
+    """
+    point_dim = dim - 2
+    distance = []
+    boundary = np.empty((dim, 0))
+    if point_dim == 0: #dimが2のときの処理はboundary生成まで別途行う
+        boundary = np.array(([0, 1], [1, 0]))
+        return boundary
+    else:
+        """
+        以下、上記手順イ
+        (例)pointが(0, 0.2, 0.2, 0.9)ならば、
+            (0, 0.2, 0, 0.7, 0.1)をdistanceとして返す
+        """
+        distance = np.array(point)
+        number_of_colomns = len(distance) / point_dim
+        Identity = np.identity((point_dim+1))
+        PointtorangeA = Identity[:-1].T - Identity[1:].T
+        PointtorangeB = np.zeros((point_dim+1, number_of_colomns))
+        distance.shape = (number_of_colomns, point_dim)
+        PointtorangeB[-1,:] = 1
+        distance = np.dot(PointtorangeA, distance.T) + PointtorangeB
+        """
+        以下、上記手順ロ
+        (例)distanceが(0, 0.2, 0, 0.7, 0.1)ならば（若干無駄はあるが、）
+            (0, 0, 0.2, 0, 0.7, 0.1)
+            (0, 0, 0.2, 0, 0.7, 0.1)
+            (0, 0.2, 0, 0, 0.7, 0.1)
+            (0, 0.2, 0, 0, 0.7, 0.1)
+            (0, 0.2, 0, 0.7, 0, 0.1)
+            (0, 0.2, 0, 0.7, 0.1, 0)
+            の６つをboundaryとして返す
+        """        
+        zeros = np.zeros(number_of_colomns)
+        for i in range(dim):
+            insert_zeros = np.insert(distance, i*number_of_colomns, zeros)
+            insert_zeros.shape = (dim, number_of_colomns)
+            boundary = np.concatenate((boundary, insert_zeros), axis=1)
+        return boundary    
+    
+def gen_strategies(dim):
+    """
+    次元を与えると、取りうる全ての純粋戦略の組を返す.
+    playerが２人の場合にのみ対応.
+    (例)dim = 2ならば、(0, 0), (0, 1), (1, 0), (1, 1)の4つをリスト中のタプルとして返す.
+    """
+    strategies = []
+    for i in range(dim):
+        for j in range(dim):
+            strategies.append((i,j))
+    return strategies
+
+def degen_matrix(mat, dim, strat, upper, HUGE=1E+7):
+    """
+    行列を退化させる関数.BestResponseを求めるが、MPMaximizerの戦略a-starによって、
+    条件式で取れる戦略を限る必要があるので、この関数が必要.
+    命名はupperがTrueなら下の例での１つ目、Falseなら２つ目になるよう返す.
+    (例)A_i = {0, 1, 2, 3}でa-star_i = 2とすると、２つある条件のうちの１つ目
+        br{pi_i|[0,2]}は、0から2までの戦略の中からbrを選ぶということなので、
+        利得行列を、
+        [ ## ## ## ##
+          ## ## ## ##
+          ## ## ## ##
+          -- -- -- -- ]
+        （ただし##は元の値、--は##に比べて明らかに小さい値（-- << ##））
+        とすることで3という戦略が他に支配されるようにできる.同様に、２つ目の条件
+        br{pi_i|[2,3]}は、利得行列を
+        [ -- -- -- --
+          -- -- -- --
+          ## ## ## ##
+          ## ## ## ## ]
+        とする.
+    """
+    degen = HUGE * np.ones((dim, dim))
+    if upper:
+        for i in range(strat, dim):
+            degen[i, :] = 0
+    else:
+        for i in range(strat+1):
+            degen[i, :] = 0
+    return mat - degen
+
+def gen_aroundequ(equil, dim, point, rad=1E-4):
+    """
+    dim次元空間内で、点equilibriumを中心とした半径radの空間上の点の座標を返す.
+    生成方法はいわゆる「緯度経度の交差点」なので、北極南極の方に行くと点が密になり赤道付近が疎になる.
+    次元が上がれば上がるほどその傾向は顕著なはずで、ここはやや課題が残るが、
+    boundaryに比べて計算量の増え方は遅い（はず）なので計算速度でボトルネックになるとは考えにくいか.
+    """
+    point_dim = dim - 2
+    aroundequ = np.empty(0)
+    if point_dim == 0: #dimが2のときの処理は別で行う
+        aroundequ = np.concatenate((aroundequ, equil + rad * np.array((1, -1))))
+        aroundequ = np.concatenate((aroundequ, equil - rad * np.array((1, -1))))
+    else:
+        number_of_colomns = len(point) / point_dim
+        point = np.array(point)
+        point *= 2 * pi
+        point.shape = (number_of_colomns, point_dim)
+        for i in range(number_of_colomns):
+            delta = np.ones(dim)
+            delta[dim-1] -= 1
+            now_number = 0
+            while now_number < point_dim:
+                delta[now_number] *= np.cos(point[i, now_number])
+                for j in range(now_number+1, point_dim+1):
+                    delta[j] *= np.sin(point[i, now_number])
+                now_number += 1
+            for k in range(dim-1):
+                delta[dim-1] -= delta[k]
+            delta = rad * delta
+            aroundequ = np.concatenate((aroundequ, equil+delta), axis=1)
+    aroundequ = np.concatenate((aroundequ, equil), axis=1)
+    aroundequ.shape = (len(aroundequ)/dim, dim)
+    return aroundequ.T
+
+def cal_br(deg_mat, test, maximum, dim, epsilon=10E-7):
+    """
+    それぞれの混合戦略に対応した順番にBestResponseを返す関数.
+    BestResponseが複数ある場合はmaximumがTrueなら最大値を、そうでなければ最小値を返す.
+    """
+    A = np.dot(deg_mat, test)
+    number_of_colomns = len(test[0])
+    best_responses = []
+    for i in range(number_of_colomns):
+        br = 0
+        value = A[0][i]
+        for now_number in range(dim):
+            if maximum:
+                if A[now_number][i] - value > -epsilon:
+                    br = now_number
+                    value = A[now_number][i]
+            else:      
+                if A[now_number][i] - value > epsilon:
+                    br = now_number
+                    value = A[now_number][i]
+        best_responses.append(br)
+    return best_responses
+
+def compare(smaller, bigger):
+    """
+    リスト内の対応する要素の大小を比べる.全ての要素でsmaller側がbigger側よりも「<=」ならばTrue、
+    １ヶ所でもそうなっていなければFalseを返す.
+    """
+    X = []
+    for i in range(len(smaller)):
+        X.append(smaller[i] <= bigger[i])
+    return all(X)
+
+
+
+##main##
+
+payoff_matrix = np.array([[4.0, 0.0],
+                          [3.0, 2.0]]) #対称行列に限るが、supermodularの必要はない
+payoff_matrix1 = np.array([[7.0, 0.0, 0.0],
+                           [4.0, 1.0, 2.0],
+                           [0.0, 0.0, 8.0]])
+dim = payoff_matrix1.shape[0] #利得行列の行(列)の数を求める
+equilibrium = cal_equilibrium(payoff_matrix1, dim) #全ての戦略に対して無差別な混合戦略を求める
+mode = test_area(equilibrium, dim) #無差別な混合戦略が取り得る（全ての要素が非負）ならばTrue、そうでなければFalseを返す
+point = gen_point(dim) #boundaryやaroundequの算出に必要
+boundary = gen_boundary(dim, point) #境界を生成
+if mode: #modeがFalseの場合はaroundequを調べる必要はないので生成など省略できる
+    aroundequ = gen_aroundequ(equilibrium, dim, point)
+strategies = gen_strategies(dim) #全てのMP-maximizerの候補を列挙
+
+def cal_compare(order, deg_list, test, condition, dim):
+    if order == "first":
+        br_payoff = cal_br(deg_list[0][0], test, True, dim)
+        br_random = cal_br(deg_list[0][1], test, False, dim)
+        return condition and compare(br_random, br_payoff)
+    elif order == "second":
+        br_payoff = cal_br(deg_list[1][0], test, False, dim)
+        br_random = cal_br(deg_list[1][1], test, True, dim)
+        return condition and compare(br_payoff, br_random)
+    else:
+        print "Error! -- The order is wrong."
+
+trial = 20
+
+"""
+ここから先のtrialの部分は現時点では若干不正確.
+「本当はa-starではないけれどa-starだと認識してしまう」誤りを「空振り」、
+「本当はa-starだけれどa-starではないと認識してしまう」誤りを「見逃し」、とする.
+
+まず、monotone potential functionはrandomに試行回数分だけ発生させて１つ見つかれば終了、という書き方をしているので、
+試行回数が十分でないと「見逃し」が起こる確率は上がる.これは避けられないことではある.
+
+不正確な部分は、a-starが例えば(0, 1)など、playerによって戦略が異なる場合でも
+最初のplayerの「0」の方しか調べられていないところ.
+ここは「空振り」が生じうるところだが、修正は可能.
+具体的には、strategies[i][0]となっているところの0を1にすれば調べられるので、
+もう少し今のごちゃごちゃな感じをすっきりさせてから対応しようと思う.
+"""
+
+for i in range(len(strategies)):
+
+    print "a-star = " + str(strategies[i])
+    
+    deg_payoff_first = degen_matrix(mat=payoff_matrix1, dim=dim, strat=strategies[i][0], upper=False)
+    deg_payoff_second = degen_matrix(mat=payoff_matrix1, dim=dim, strat=strategies[i][0], upper=True)
+
+    for j in range(trial):
+        first_condition = True
+        second_condition = True
+    
+        random_matrix = np.random.uniform(0, 1, (dim, dim))
+        random_matrix[strategies[i]] = 1  
+        
+        deg_random_first = degen_matrix(mat=random_matrix, dim=dim, strat=strategies[i][0], upper=False)  
+        deg_random_second = degen_matrix(mat=random_matrix, dim=dim, strat=strategies[i][0], upper=True)
+        deg_list = [[deg_payoff_first, deg_random_first],
+                    [deg_payoff_second, deg_random_second]]
+
+        first_condition = cal_compare("first", deg_list, boundary, first_condition, dim)
+        second_condition = cal_compare("second", deg_list, boundary, second_condition, dim)
+
+        if mode:
+            first_condition = cal_compare("first", deg_list, aroundequ, first_condition, dim)
+            second_condition = cal_compare("second", deg_list, aroundequ, second_condition, dim)
+        
+        if first_condition and second_condition:
+            print random_matrix
+            break
+
+    if j == trial - 1:
+        print "This a-star does not seem to be MP-maximizer."
